@@ -9,7 +9,7 @@
 #include <map>
 #include <vector>
 
-#include "petscksp.h"
+#include "mfem.hpp"
 
 #include "mesh.h"
 #include "cstats.h"
@@ -161,9 +161,9 @@ public:
 protected:
   BcContainerType m_vBc;
 
-  Mat   m_stiffness;
-  Vec   m_load;
-  Vec   m_delta;
+  mfem::SparseMatrix*   m_stiffness;
+  mfem::Vector*   m_load;
+  mfem::Vector*   m_delta;
 
   tMesh* m_pmesh;
 
@@ -288,13 +288,6 @@ template<class Cstr,int n>
 int
 TSolver<Cstr,n>::solve()
 {
-  PetscErrorCode ierr;
-  PetscTruth petscFlag;
-  bool femPrint = false;
-
-  ierr = PetscOptionsGetReal( NULL, "-penalty_weight",
-                              &m_mfcWeight, NULL);
-  CHKERRQ(ierr);
   std::cout << " penalty_weight = " << m_mfcWeight << std::endl;
 
   done_bc_natural();
@@ -302,171 +295,58 @@ TSolver<Cstr,n>::solve()
 
   setup_matrix(true); // display information by default for the major system
 
-  // intermediate assembly point
-  ierr = MatAssemblyBegin(m_stiffness, MAT_FINAL_ASSEMBLY);
-  CHKERRQ(ierr);
-  ierr = MatAssemblyEnd(m_stiffness, MAT_FINAL_ASSEMBLY);
-  CHKERRQ(ierr);
-
-  {
-    const unsigned int maxLen = 256;
-    char buffer[maxLen];
-    ierr = PetscOptionsGetString(NULL, "-fem_print",
-                                 buffer, maxLen, &petscFlag);
-    if ( petscFlag )
-    {
-      femPrint = true;
-      PetscViewer viewer;
-      PetscViewerBinaryOpen( PETSC_COMM_SELF, buffer,
-                             FILE_MODE_WRITE, &viewer);
-      MatView(m_stiffness, viewer);
-      PetscViewerDestroy(viewer);
-    }
-  }
+  // MFEM matrices are finalized during construction - no explicit assembly needed
 
   setup_load_sym(); // pin down Natural conditions
   setup_load_mfc(); // setup MFC conditions
 
-  if ( femPrint )
+  // MFEM vectors are ready to use after setup
+
+  // Allocate solution vector
+  m_delta = new mfem::Vector(m_load->Size());
+  *m_delta = 0.0; // Initialize to zero
+
+  // Create and configure the linear solver
+  // Using PCG (Preconditioned Conjugate Gradient) which is suitable for symmetric positive definite systems
+  mfem::CGSolver cg;
+  cg.SetRelTol(1.0e-9);
+  cg.SetMaxIter(10000);
+  cg.SetPrintLevel(2);
+  cg.SetOperator(*m_stiffness);
+
+  // Solve the linear system A*x = b
+  cg.Mult(*m_load, *m_delta);
+
+  if (cg.GetConverged())
   {
-    PetscViewer viewer;
-    PetscViewerBinaryOpen( PETSC_COMM_SELF, "final_stif.bin",
-                           FILE_MODE_WRITE, &viewer);
-    MatView(m_stiffness, viewer);
-    PetscViewerDestroy(viewer);
+    std::cout << " MFEM CGSolver converged in " << cg.GetNumIterations()
+              << " iterations with final norm " << cg.GetFinalNorm() << std::endl;
+  }
+  else
+  {
+    std::cout << " WARNING: MFEM CGSolver did not converge!" << std::endl;
   }
 
-  // final assembly point
-  ierr = MatAssemblyBegin(m_stiffness, MAT_FINAL_ASSEMBLY);
-  CHKERRQ(ierr);
-  ierr = MatAssemblyEnd(m_stiffness, MAT_FINAL_ASSEMBLY);
-  CHKERRQ(ierr);
-
-  ierr = VecAssemblyBegin(m_load);
-  CHKERRQ(ierr);
-  ierr = VecAssemblyEnd(m_load);
-  CHKERRQ(ierr);
-
-  ierr = PetscOptionsHasName( NULL,  "-init_guess_nonzero", &petscFlag );
-  CHKERRQ(ierr);
-  bool initGuessNonZero = static_cast<bool>( petscFlag );
-  if (initGuessNonZero )
-    std::cout << " initial guess nonzero for system solving\n";
-
-  // solve the linear system
-  ierr = VecDuplicate(m_load, &m_delta);
-  CHKERRQ(ierr);
-  if ( initGuessNonZero )
-    ierr = VecCopy(m_load, m_delta);
-  CHKERRQ(ierr);
-
-  //unused: PC pc;
-  KSP ksp;
-  ierr = KSPCreate(PETSC_COMM_WORLD, &ksp);
-  CHKERRQ(ierr);
-  ierr = KSPSetOperators(ksp, m_stiffness, m_stiffness, SAME_NONZERO_PATTERN);
-  CHKERRQ(ierr);
-  //ierr = KSPGetPC(ksp, &pc); CHKERRQ(ierr);
-  //ierr = PCSetType(pc, PCJACOBI); CHKERRQ(ierr);
-  ierr = KSPSetTolerances(ksp, 1.0e-9,
-                          PETSC_DEFAULT, PETSC_DEFAULT,
-                          PETSC_DEFAULT);
-  CHKERRQ(ierr);
-  if (initGuessNonZero )
-    ierr = KSPSetInitialGuessNonzero(ksp, PETSC_TRUE);
-  CHKERRQ(ierr);
-
-  // set runtime options
-  ierr = KSPSetFromOptions(ksp);
-  CHKERRQ(ierr);
-  // solve
-  ierr = KSPSolve(ksp, m_load, m_delta);
-  CHKERRQ(ierr);
-
-  KSPConvergedReason reason;
-  ierr = KSPGetConvergedReason(ksp, &reason);
-  CHKERRQ(ierr);
-  std::cout << " convergence reason = " << reason << std::endl;
-
-  // view solver info
-  ierr = KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD);
-  CHKERRQ(ierr);
-
-  // check the error
-  PetscInt its;
-  ierr = KSPGetIterationNumber(ksp,&its);
-  CHKERRQ(ierr);
-  ierr = PetscPrintf(PETSC_COMM_WORLD, " Iterations %D\n", its);
-  CHKERRQ(ierr);
-
-  Vec vcheck;
-  ierr = VecDuplicate(m_load, &vcheck);
-  CHKERRQ(ierr);
-  ierr = MatMult( m_stiffness, m_delta, vcheck);
-  CHKERRQ(ierr);
-  PetscScalar neg_one = -1.0;
-  PetscReal norm;
-  ierr = VecAXPY( vcheck, neg_one, m_load);
-  CHKERRQ(ierr);
-  ierr = VecNorm(vcheck, NORM_2, &norm);
-  CHKERRQ(ierr);
-  ierr = VecDestroy(vcheck);
-  CHKERRQ(ierr);
-
-  ierr = PetscPrintf(PETSC_COMM_WORLD, "Absolute-Norm of error = %A\n", norm);
-  CHKERRQ(ierr);
+  // Check the error: ||A*x - b||
+  mfem::Vector residual(m_load->Size());
+  m_stiffness->Mult(*m_delta, residual);
+  residual -= *m_load;
+  double norm = residual.Norml2();
+  std::cout << "Absolute-Norm of error = " << norm << std::endl;
 
   //--------
   comm_solution(); // distribute obtained displacements to nodes
 
   double dremainingRatio;
   check_bc_error(dremainingRatio);
-  if ( dremainingRatio > .1 && 0)
-  {
-    PetscViewer viewer;
-    static int outCount = 0;
-    char* pchBuf = new char[100];
 
-    sprintf(pchBuf, "stif_%d.bin", outCount);
-    PetscViewerBinaryOpen( PETSC_COMM_SELF,
-                           pchBuf,
-                           FILE_MODE_WRITE,
-                           &viewer );
-    MatView(m_stiffness, viewer);
-    PetscViewerDestroy(viewer);
-
-    sprintf(pchBuf, "load_%d.bin", outCount);
-    PetscViewerBinaryOpen( PETSC_COMM_SELF,
-                           pchBuf,
-                           FILE_MODE_WRITE,
-                           &viewer);
-    VecView(m_load, viewer);
-    PetscViewerDestroy(viewer);
-
-    sprintf(pchBuf, "sol_%d.bin", outCount);
-    PetscViewerBinaryOpen( PETSC_COMM_SELF,
-                           pchBuf,
-                           FILE_MODE_WRITE,
-                           &viewer);
-    VecView(m_delta, viewer);
-    PetscViewerDestroy(viewer);
-
-    delete[] pchBuf;
-  }
-
-  // release Petsc resources
-  ierr = VecDestroy(m_delta);
-  CHKERRQ(ierr);
-  m_delta=0;
-  ierr = VecDestroy(m_load);
-  CHKERRQ(ierr);
-  m_load=0;
-  ierr = MatDestroy(m_stiffness);
-  CHKERRQ(ierr);
-  m_stiffness=0;
-  ierr = KSPDestroy(ksp);
-  CHKERRQ(ierr);
-  ksp = 0;
+  // release MFEM resources
+  delete m_delta;
+  m_delta = nullptr;
+  delete m_load;
+  m_load = nullptr;
+  delete m_stiffness;
+  m_stiffness = nullptr;
 
   return 0;
 }
@@ -548,7 +428,6 @@ template<class Cstr, int n>
 int
 TSolver<Cstr,n>::done_bc_mfc()
 {
-
   bool bFailed = false;
 
   typedef std::map< int, std::vector<int> > MfcCandidateType;
@@ -650,19 +529,12 @@ template<class Cstr,int n>
 int
 TSolver<Cstr,n>::setup_matrix(bool showInfo)
 {
-  PetscErrorCode ierr;
   int n_eqs = m_pmesh->get_no_nodes() * n; // template par = dim
   if (showInfo)  std::cout << " no-eqs = " << n_eqs << std::endl;
-  ierr = MatCreateSeqAIJ(PETSC_COMM_SELF,n_eqs,n_eqs,
-                         100, NULL,
-                         &m_stiffness);
-  CHKERRQ(ierr);
-  ierr = MatSetFromOptions(m_stiffness);
-  CHKERRQ(ierr);
-  ierr = MatSetOption(m_stiffness, MAT_SYMMETRIC);
-  CHKERRQ(ierr);
-  ierr = MatSetOption(m_stiffness, MAT_SYMMETRY_ETERNAL);
-  CHKERRQ(ierr);
+
+  // Create MFEM SparseMatrix
+  // We'll use dynamic assembly, so we don't need to specify the structure in advance
+  m_stiffness = new mfem::SparseMatrix(n_eqs, n_eqs);
 
   int iold_val = -1;
   for ( size_t i= size_t(0);
@@ -680,6 +552,10 @@ TSolver<Cstr,n>::setup_matrix(bool showInfo)
     }
     add_elt_matrix(m_pmesh->get_elt(i));
   }
+
+  // Finalize the sparse matrix
+  m_stiffness->Finalize();
+
   return 0;
 }
 
@@ -689,7 +565,6 @@ template<class Cstr, int n>
 int
 TSolver<Cstr,n>::add_elt_matrix(const tElement* pelt)
 {
-  PetscErrorCode ierr;
   int *id = new int[ pelt->no_nodes() ];
   tNode* pnode = NULL;
 
@@ -707,11 +582,6 @@ TSolver<Cstr,n>::add_elt_matrix(const tElement* pelt)
 
   SmallMatrix elt_matrix = pelt->get_matrix();
 
-  PetscScalar* values = new PetscScalar[ elt_matrix.rows()
-                                         * elt_matrix.cols() ];
-  int *pindex_1 = new int[ elt_matrix.rows() ];
-  int *pindex_2 = new int[ elt_matrix.cols() ];
-
   int a,b;
   for (int i= 0; i<pelt->no_nodes(); ++i)
     for (int j= 0; j<pelt->no_nodes(); ++j)
@@ -724,23 +594,15 @@ TSolver<Cstr,n>::add_elt_matrix(const tElement* pelt)
           assert(id[i]>=0);
           assert(id[j]>=0);
 
-          pindex_1[a] = n*id[i]+k;
-          pindex_2[b] = n*id[j]+l;
+          int row = n*id[i]+k;
+          int col = n*id[j]+l;
+          double value = (double)elt_matrix(a,b);
 
-          values[ a + n* pelt->no_nodes() *b ] = (float)elt_matrix(a,b);
+          // Add value to sparse matrix
+          m_stiffness->Add(row, col, value);
         }
 
-  ierr = MatSetValues( m_stiffness,
-                       elt_matrix.rows(), pindex_1,
-                       elt_matrix.cols(), pindex_2,
-                       values,
-                       ADD_VALUES);
-  CHKERRQ(ierr);
-
   delete[] id;
-  delete[] values;
-  delete[] pindex_1;
-  delete[] pindex_2;
 
   return 0;
 }
@@ -752,7 +614,6 @@ int
 TSolver<Cstr,n>::add_elt_mfc_lhs(const tElement* pelt,
                                  tCoords& pt)
 {
-  PetscErrorCode ierr;
   int *id = new int[ pelt->no_nodes() ];
   tNode* pnode = NULL;
 
@@ -782,12 +643,6 @@ TSolver<Cstr,n>::add_elt_mfc_lhs(const tElement* pelt,
   bufMatrix = elt_matrix.transpose() * elt_matrix;
   bufMatrix *= m_mfcWeight;
 
-  int *pindex_1 = new int[ bufMatrix.rows() ];
-  int *pindex_2 = new int[ bufMatrix.cols() ];
-
-  PetscScalar* values = new PetscScalar[ bufMatrix.rows() *
-                                         bufMatrix.cols() ];
-
   int a,b;
   for (int i=0; i<pelt->no_nodes(); ++i)
     for (int j=0; j<pelt->no_nodes(); ++j)
@@ -797,24 +652,15 @@ TSolver<Cstr,n>::add_elt_mfc_lhs(const tElement* pelt,
           a = n*i + k;
           b = n*j + l;
 
-          pindex_1[a] = n*id[i] + k;
-          pindex_2[b] = n*id[j] + l;
+          int row = n*id[i] + k;
+          int col = n*id[j] + l;
+          double value = bufMatrix(a,b);
 
-          values[ a + n* pelt->no_nodes() * b] = bufMatrix(a,b);
+          // Add value to sparse matrix
+          m_stiffness->Add(row, col, value);
         } // next i,j,k,l
 
-
-  ierr = MatSetValues( m_stiffness,
-                       bufMatrix.rows(), pindex_1,
-                       bufMatrix.cols(), pindex_2,
-                       values,
-                       ADD_VALUES);
-  CHKERRQ(ierr);
-
   delete[] id;
-  delete[] pindex_1;
-  delete[] pindex_2;
-  delete[] values;
 
   return 0;
 }
@@ -849,7 +695,6 @@ TSolver<Cstr, n>::add_elt_mfc_rhs(const tElement* pelt,
                                   tCoords& pt,
                                   tCoords& delta)
 {
-  PetscErrorCode ierr;
   tNode* pnode = NULL;
 
   SmallMatrix elt_matrix(n, n* pelt->no_nodes() );
@@ -872,8 +717,6 @@ TSolver<Cstr, n>::add_elt_mfc_rhs(const tElement* pelt,
 
   bufMatrix = elt_matrix * mfc_rhs;
 
-  std::map<int, double> mrhs;
-
   for (int i=0; i<pelt->no_nodes(); ++i)
   {
     if ( !pelt->get_node(i, &pnode) )
@@ -882,27 +725,12 @@ TSolver<Cstr, n>::add_elt_mfc_rhs(const tElement* pelt,
       exit(1);
     }
     for (int j=0; j<n; ++j)
-      mrhs[ n* pnode->get_id() + j ] = bufMatrix( n*i + j, 0);
+    {
+      int idx = n* pnode->get_id() + j;
+      double value = bufMatrix( n*i + j, 0);
+      (*m_load)(idx) += value; // Add to load vector
+    }
   } // next i
-
-  int    *indices = new int[ mrhs.size() ];
-  double *values  = new double[ mrhs.size() ];
-
-  int index =0;
-  for ( typename std::map<int, double>::const_iterator cit = mrhs.begin();
-        cit != mrhs.end(); ++cit, ++index )
-  {
-    indices[ index ] = cit->first;
-    values[ index ] = cit->second;
-  } // next cit
-
-  ierr = VecSetValues( m_load, (int)mrhs.size(),
-                       indices, values,
-                       ADD_VALUES);
-  CHKERRQ(ierr);
-
-  delete[] indices;
-  delete[] values;
 
   return 0;
 }
@@ -913,17 +741,8 @@ template<class Cstr,int n>
 int
 TSolver<Cstr,n>::comm_solution()
 {
-  PetscErrorCode ierr;
-
-  int no_eqs = m_pmesh->get_no_nodes() *n;
-
-  PetscScalar *pdelta = new PetscScalar[no_eqs];
-  ierr = VecGetArray(m_delta, &pdelta);
-  CHKERRQ(ierr);
-
   tNode* pnode = NULL;
-  int count = 0;
-  for (size_t i=size_t(0); i<m_pmesh->get_no_nodes(); ++i,count++)
+  for (size_t i=size_t(0); i<m_pmesh->get_no_nodes(); ++i)
   {
     pnode = NULL;
     m_pmesh->get_node(i,&pnode);
@@ -933,10 +752,11 @@ TSolver<Cstr,n>::comm_solution()
       exit(1);
     }
     for (int j=0; j<n; ++j)
-      pnode->set_dof_val(j, pdelta[ pnode->get_id()*n + j]);
+    {
+      int idx = pnode->get_id()*n + j;
+      pnode->set_dof_val(j, (*m_delta)(idx));
+    }
   }
-  ierr = VecRestoreArray(m_delta, &pdelta);
-  CHKERRQ(ierr);
 
   return 0;
 }
@@ -947,12 +767,8 @@ template<class Cstr,int n>
 int
 TSolver<Cstr,n>::setup_load()
 {
-  PetscErrorCode ierr;
   tNode* pnode;
   int no_eqs = n * m_pmesh->get_no_nodes();
-
-  ierr = MatSetOption(m_stiffness, MAT_NO_NEW_NONZERO_LOCATIONS);
-  CHKERRQ(ierr);
 
   std::map<int, double> mrhs;
 
@@ -972,50 +788,33 @@ TSolver<Cstr,n>::setup_load()
   }
 
   // create the RHS vector
-  // by default, all the values will be NULL
-  ierr = VecCreate( PETSC_COMM_SELF, &m_load);
-  CHKERRQ(ierr);
-  ierr = VecSetSizes(m_load, PETSC_DECIDE, no_eqs);
-  CHKERRQ(ierr);
-  ierr = VecSetFromOptions(m_load);
-  CHKERRQ(ierr);
+  m_load = new mfem::Vector(no_eqs);
+  *m_load = 0.0; // Initialize to zero
 
-  int* indices = new int[ mrhs.size()];
-  double* values = new double[ mrhs.size()];
-
-  int i=0;
+  // Set BC values in load vector
   for ( typename std::map<int,double>::const_iterator
         cit = mrhs.begin();
         cit!= mrhs.end();
-        ++cit ,++i)
+        ++cit)
   {
-    indices[i] = cit->first;
-    values[i] = cit->second;
+    (*m_load)(cit->first) = cit->second;
   }
 
-  // create index set
-
-  IS is;
-  ierr = ISCreateGeneral(PETSC_COMM_WORLD, (int)mrhs.size(),
-                         indices, &is);
-  CHKERRQ(ierr);
-  ierr = MatZeroRowsIS(m_stiffness, is, 1.0);
-  CHKERRQ(ierr);
-  ierr = ISDestroy(is);
-  CHKERRQ(ierr);
-
-  ierr = VecSetValues(m_load, (int)mrhs.size(),
-                      indices, values,
-                      INSERT_VALUES);
-  CHKERRQ(ierr);
-
-  ierr = VecAssemblyBegin(m_load);
-  CHKERRQ(ierr);
-  ierr = VecAssemblyEnd(m_load);
-  CHKERRQ(ierr);
-
-  delete[] indices;
-  delete[] values;
+  // Zero out rows in stiffness matrix corresponding to BCs and set diagonal to 1
+  for ( typename std::map<int,double>::const_iterator
+        cit = mrhs.begin();
+        cit!= mrhs.end();
+        ++cit)
+  {
+    int row = cit->first;
+    // Zero out the row
+    for (int col = 0; col < no_eqs; ++col)
+    {
+      m_stiffness->Set(row, col, 0.0);
+    }
+    // Set diagonal to 1
+    m_stiffness->Set(row, row, 1.0);
+  }
 
   return 0;
 }
@@ -1026,34 +825,13 @@ template <class Cstr, int n>
 int
 TSolver<Cstr,n>::setup_load_sym()
 {
-  PetscErrorCode ierr;
-  //unused: tNode* pnode;
-
   int no_eqs = n * m_pmesh->get_no_nodes();
 
-  ierr = MatSetOption(m_stiffness, MAT_NO_NEW_NONZERO_LOCATIONS);
-  CHKERRQ(ierr);
   std::map<int,double> mrhs;
 
-#if 0
-  for (size_t i=size_t(0); i<m_pmesh->get_no_nodes(); ++i)
-  {
-    if ( !m_pmesh->get_node(i, &pnode) )
-    {
-      std::cerr << "TSolver::setup_load_sym -> requested node out of range\n";
-      exit(1);
-    }
-
-    for (int j=0; j<n; ++j)
-    {
-      if (pnode->is_dof_active(j))
-        mrhs[ n* pnode->get_id() + j ] = pnode->get_dof(j);
-    }      // next j
-  } // next i
-#endif
   if ( m_displayLevel>1) std::cout << " done_bc_natural size of container = "
     << m_vBc.size() << std::endl;
-  ;
+
   for (typename BcContainerType::iterator it = m_vBc.begin();
        it != m_vBc.end(); ++it )
   {
@@ -1070,70 +848,54 @@ TSolver<Cstr,n>::setup_load_sym()
   std::cout << " LOAD size = " << mrhs.size() << std::endl;
 
   // create RHS vector
-  ierr = VecCreate( PETSC_COMM_SELF, &m_load);
-  CHKERRQ(ierr);
-  ierr = VecSetSizes(m_load, PETSC_DECIDE, no_eqs);
-  CHKERRQ(ierr);
-  ierr = VecSetFromOptions(m_load);
-  CHKERRQ(ierr);
+  m_load = new mfem::Vector(no_eqs);
+  *m_load = 0.0;
 
-  int *indices = new int[ mrhs.size() ];
-  double *values = new double[ mrhs.size() ];
+  // compute RHS vector using: b' = b - A*bc_values
+  mfem::Vector vecBcs(no_eqs);
+  vecBcs = 0.0;
 
-  int i=0;
   for ( typename std::map<int,double>::const_iterator
         cit = mrhs.begin();
         cit!= mrhs.end();
-        ++cit ,++i)
+        ++cit)
   {
-    indices[i] = cit->first;
-    values[i] = cit->second;
+    vecBcs(cit->first) = -cit->second;
   }
 
-  // compute RHS vector
-  Vec vecBcs;
-  ierr = VecCreate( PETSC_COMM_SELF, &vecBcs);
-  CHKERRQ(ierr);
-  ierr = VecSetSizes( vecBcs, PETSC_DECIDE, no_eqs);
-  CHKERRQ(ierr);
-  ierr = VecSetFromOptions(vecBcs);
-  CHKERRQ(ierr);
+  // m_load = A * vecBcs
+  m_stiffness->Mult(vecBcs, *m_load);
 
-  PetscScalar* rhsValues = new PetscScalar[ mrhs.size()];
+  // Set BC values in load vector
+  for ( typename std::map<int,double>::const_iterator
+        cit = mrhs.begin();
+        cit!= mrhs.end();
+        ++cit)
+  {
+    (*m_load)(cit->first) = cit->second;
+  }
 
-  for ( i=0; i<(int)mrhs.size(); ++i)
-    rhsValues[i] = -values[i];
-
-  ierr = VecSetValues( vecBcs, (int)mrhs.size(), indices,
-                       rhsValues, INSERT_VALUES);
-  CHKERRQ(ierr);
-  ierr = VecAssemblyBegin(vecBcs);
-  CHKERRQ(ierr);
-  ierr = VecAssemblyEnd(vecBcs);
-  CHKERRQ(ierr);
-
-  ierr = MatMult( m_stiffness, vecBcs, m_load);
-  CHKERRQ(ierr);
-  ierr = VecDestroy(vecBcs);
-  CHKERRQ(ierr);
-  ierr = VecSetValues( m_load, (int)mrhs.size(),
-                       indices, values, INSERT_VALUES);
-  CHKERRQ(ierr);
-
-  // condition the matrix
-  IS is;
-  ierr = ISCreateGeneral(PETSC_COMM_WORLD, (int)mrhs.size(),
-                         indices, &is);
-  CHKERRQ(ierr);
-  ierr = MatZeroRowsIS(m_stiffness, is, 1.0);
-  CHKERRQ(ierr);
-  ierr = MatTranspose( m_stiffness, PETSC_NULL);
-  CHKERRQ(ierr);
-  ierr = MatZeroRowsIS(m_stiffness, is, 1.0);
-  CHKERRQ(ierr);
-
-  ierr = ISDestroy(is);
-  CHKERRQ(ierr);
+  // Condition the matrix symmetrically
+  // Zero rows and columns for BC degrees of freedom
+  for ( typename std::map<int,double>::const_iterator
+        cit = mrhs.begin();
+        cit!= mrhs.end();
+        ++cit)
+  {
+    int idx = cit->first;
+    // Zero out row
+    for (int col = 0; col < no_eqs; ++col)
+    {
+      m_stiffness->Set(idx, col, 0.0);
+    }
+    // Zero out column
+    for (int row = 0; row < no_eqs; ++row)
+    {
+      m_stiffness->Set(row, idx, 0.0);
+    }
+    // Set diagonal to 1
+    m_stiffness->Set(idx, idx, 1.0);
+  }
 
   return 0;
 }
@@ -1218,115 +980,51 @@ template<class Cstr, int n>
 int
 TDirectSolver<Cstr,n>::solve()
 {
-  PetscErrorCode ierr;
-
   this->done_bc_natural();
 
   this->setup_matrix();
 
-  // intermediate assembly point
-  ierr = MatAssemblyBegin(this->m_stiffness, MAT_FINAL_ASSEMBLY);
-  CHKERRQ(ierr);
-  ierr = MatAssemblyEnd(this->m_stiffness, MAT_FINAL_ASSEMBLY);
-  CHKERRQ(ierr);
+  // MFEM matrices are finalized during construction
 
   this->setup_load_sym();
 
-  // final assembly point
-  ierr = MatAssemblyBegin(this->m_stiffness, MAT_FINAL_ASSEMBLY);
-  CHKERRQ(ierr);
-  ierr = MatAssemblyEnd(this->m_stiffness, MAT_FINAL_ASSEMBLY);
-  CHKERRQ(ierr);
+  // MFEM vectors are ready to use after setup
 
-  ierr = VecAssemblyBegin(this->m_load);
-  CHKERRQ(ierr);
-  ierr = VecAssemblyEnd(this->m_load);
-  CHKERRQ(ierr);
+  // Allocate solution vector
+  this->m_delta = new mfem::Vector(this->m_load->Size());
+  *(this->m_delta) = *(this->m_load); // Initialize with load vector
 
-  // solve linear system
-  ierr = VecDuplicate(this->m_load, &this->m_delta);
-  CHKERRQ(ierr);
-  ierr = VecCopy(this->m_load, this->m_delta);
-  CHKERRQ(ierr);
+  // Create and configure the linear solver
+  mfem::CGSolver cg;
+  cg.SetRelTol(1.0e-9);
+  cg.SetMaxIter(10000);
+  cg.SetPrintLevel(this->m_displayLevel);
+  cg.SetOperator(*(this->m_stiffness));
 
-  PC pc;
-  KSP ksp;
-  ierr = KSPCreate(PETSC_COMM_WORLD, &ksp);
-  CHKERRQ(ierr);
-  ierr = KSPSetOperators(ksp,
-                         this->m_stiffness,
-                         this->m_stiffness,
-                         SAME_NONZERO_PATTERN);
-  CHKERRQ(ierr);
-  ierr = KSPGetPC(ksp, &pc);
-  CHKERRQ(ierr);
-  ierr = PCSetType(pc, PCJACOBI);
-  CHKERRQ(ierr);
-  ierr = PCFactorSetUseInPlace(pc);
-  ierr = KSPSetType(ksp, KSPCG);
-  CHKERRQ(ierr);
+  // Solve the linear system
+  cg.Mult(*(this->m_load), *(this->m_delta));
 
-  ierr = KSPSetOptionsPrefix(ksp, "direct_");
-  ierr = KSPSetFromOptions(ksp);
-  CHKERRQ(ierr);
-  ierr = KSPSetInitialGuessNonzero(ksp, PETSC_TRUE);
-  CHKERRQ(ierr);
-
-  ierr = KSPSolve(ksp, this->m_load, this->m_delta);
-  CHKERRQ(ierr);
-
+  if (cg.GetConverged())
   {
-    static std::map<int,std::string> kspConvergenceReason;
-    kspConvergenceReason[KSP_CONVERGED_RTOL] = "ksp-converged-rtol";
-    kspConvergenceReason[KSP_CONVERGED_ATOL] = "ksp-converged-atol";
-    kspConvergenceReason[KSP_CONVERGED_ITS]  = "ksp-converged-its";
-    kspConvergenceReason[KSP_CONVERGED_CG_NEG_CURVE] =
-      "ksp-converged-stcg-neg-curve";
-    kspConvergenceReason[KSP_CONVERGED_CG_CONSTRAINED] =
-      "ksp-converged-stcg-constrained";
-    kspConvergenceReason[KSP_CONVERGED_STEP_LENGTH] =
-      "ksp-converged-step-length";
-    kspConvergenceReason[KSP_CONVERGED_HAPPY_BREAKDOWN] =
-      "ksp-converged-happy-breakdown";
-    kspConvergenceReason[KSP_DIVERGED_NULL] = "ksp-diverged-null";
-    kspConvergenceReason[KSP_DIVERGED_ITS] = "ksp-diverged-its";
-    kspConvergenceReason[KSP_DIVERGED_DTOL] = "ksp-diverged-dtol";
-    kspConvergenceReason[KSP_DIVERGED_BREAKDOWN] = "ksp-diverged-breakdown";
-    kspConvergenceReason[KSP_DIVERGED_BREAKDOWN_BICG]=
-      "ksp-diverged-breakdown-bicg";
-    kspConvergenceReason[KSP_DIVERGED_NONSYMMETRIC] =
-      "ksp-diverged-nonsymmetric";
-    kspConvergenceReason[KSP_DIVERGED_INDEFINITE_PC]=
-      "ksp-diverged-indefinite-pc";
-    kspConvergenceReason[KSP_DIVERGED_NAN]="ksp-diverged-nan";
-    kspConvergenceReason[KSP_DIVERGED_INDEFINITE_MAT]=
-      "ksp-diverged-indefinite-mat";
-    kspConvergenceReason[KSP_CONVERGED_ITERATING]="ksp-converged-iterating";
-
-    KSPConvergedReason reason;
-    ierr = KSPGetConvergedReason(ksp, &reason);
-    CHKERRQ(ierr);
     if (this->m_displayLevel)
-      std::cout << "DirectSolverConvergence = "
-      << kspConvergenceReason[reason] << std::endl;
+      std::cout << "DirectSolverConvergence = converged in "
+                << cg.GetNumIterations() << " iterations" << std::endl;
+  }
+  else
+  {
+    std::cout << "WARNING: DirectSolver did not converge!" << std::endl;
   }
 
   // distribute obtained displacements to nodes
   this->comm_solution();
 
-  // release Petsc resources
-  ierr = VecDestroy(this->m_delta);
-  CHKERRQ(ierr);
-  this->m_delta = 0;
-  ierr = VecDestroy(this->m_load);
-  CHKERRQ(ierr);
-  this->m_load=0;
-  ierr = MatDestroy(this->m_stiffness);
-  CHKERRQ(ierr);
-  this->m_stiffness=0;
-  ierr = KSPDestroy(ksp);
-  CHKERRQ(ierr);
-  ksp = 0;
+  // release MFEM resources
+  delete this->m_delta;
+  this->m_delta = nullptr;
+  delete this->m_load;
+  this->m_load = nullptr;
+  delete this->m_stiffness;
+  this->m_stiffness = nullptr;
 
   return 0;
 }

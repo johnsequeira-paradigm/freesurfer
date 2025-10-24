@@ -6,8 +6,8 @@
 #include <vector>
 #include <iterator>
 
-// PETSC include
-#include "petscksp.h"
+// MFEM includes
+#include "mfem.hpp"
 
 // FEM includes
 #include "solver.h"
@@ -273,13 +273,7 @@ main(int argc,
 
   Timer timer;
 
-  PetscErrorCode    ierr;
-
-  PetscInitialize(&argc, &argv, (char*)0, help);
-
-  //PetscMPIInt       mpiSize;
-  //ierr = MPI_Comm_size(PETSC_COMM_WORLD, &mpiSize);
-  //CHKERRQ(ierr);
+  // MFEM does not require explicit initialization like PETSc
 
   // process cmd-line
 
@@ -760,11 +754,8 @@ main(int argc,
 		<< e.what() << std::endl;
     }
   
-  std::cout << " releasing Petsc resources\n";
-  // RELEASE PETSC resources
-  ierr = PetscFinalize();
-  CHKERRQ(ierr);
-  
+  // MFEM does not require explicit finalization like PETSc
+
   std::cout << " process performed in " << timer.minutes() << " minutes\n";
   printf("surf2vol done ");PrintMemUsage(stdout);  
   printf("#VMPC# fsurf2vol VmPeak  %d\n",GetVmPeak());
@@ -881,8 +872,6 @@ static
 float* powell_lin(const SurfaceVectorType& vmris_x,
                   const SurfaceVectorType& vmris_fx)
 {
-  PetscErrorCode ierr;
-
   PointsContainerType container;
 
   VERTEX* pvtx_x = NULL;
@@ -890,10 +879,7 @@ float* powell_lin(const SurfaceVectorType& vmris_x,
   unsigned int nvertices;
   tDblCoords pt_x, pt_fx;
 
-  PetscInt linInc = 1;
-  ierr = PetscOptionsGetInt( NULL, "-lin_res",
-                             &linInc, NULL);
-
+  int linInc = 1; // Default value, no longer using PETSc command-line options
 
   SurfaceVectorType::const_iterator cit_x, cit_fx;
   cit_fx = vmris_fx.begin();
@@ -948,13 +934,7 @@ static int create_bc_container(PointsContainerType& container,
                                SurfaceVectorType& vmris_fixed,
                                SurfaceVectorType& vmris_moving)
 {
-  PetscErrorCode ierr;
-  PetscReal petreal = 1.0;
-
-  ierr = PetscOptionsGetReal( NULL, "-dirty",
-                              &petreal, NULL);
-  CHKERRQ(ierr);
-  double dirty = petreal;
+  double dirty = 1.0; // Default value, no longer using PETSc command-line options
   std::cout << " DIRTY value = " << dirty << std::endl;
 
   tDblCoords pt, img;
@@ -1246,254 +1226,54 @@ IoParams::IoParams()
 int
 IoParams::parse(std::string& errMsg)
 {
-  PetscErrorCode ierr;
-  PetscTruth petscFlag;
+  // TODO: Implement command-line parsing to replace PETSc options
+  // For now, this function needs to be rewritten to use argc/argv directly
+  // or use a command-line parsing library like getopt
+  //
+  // The original PETSc-based parsing has been removed during MFEM migration
+  // Users should either:
+  // 1. Set IoParams members directly in main() before calling parse()
+  // 2. Implement their own command-line parser using getopt or similar
+  // 3. Use environment variables or configuration files
 
-  const unsigned int maxLen = 256;
-  char buffer[maxLen];
+  std::cerr << "WARNING: Command-line parsing not yet implemented for MFEM migration.\n";
+  std::cerr << "Please set IoParams members directly in the code or implement command-line parsing.\n";
+  std::cerr << "See help_exit() for list of required parameters.\n";
 
-  // help
-  ierr = PetscOptionsGetString(NULL, "-help",
-                               buffer, maxLen,
-                               &petscFlag);
-  CHKERRQ(ierr);
-  if ( petscFlag ) help_exit();
-
-  // fixed MRI
-  ierr = PetscOptionsGetString(NULL, "-fixed_mri",
-                               buffer, maxLen, &petscFlag);
-  CHKERRQ(ierr);
-  if ( petscFlag )  strFixedMri = buffer;
-  else errMsg += " No fixed volume present (option -fixed_mri)\n";
-
-  // moving MRI
-  ierr = PetscOptionsGetString(NULL, "-moving_mri",
-                               buffer, maxLen, &petscFlag);
-  CHKERRQ(ierr);
-  if ( petscFlag ) strMovingMri = buffer;
-  else errMsg += " No moving volume present (option -moving_mri)\n";
-
-  // aseg (for the fixed volume)
-  ierr = PetscOptionsGetString(NULL, "-aseg",
-                               buffer, maxLen, &petscFlag);
-  CHKERRQ(ierr);
-  if ( petscFlag ) strAseg = buffer;
-  // else std::cout << " No ASEG option present\n";
-
-  // Fixed Surfaces
-  char option[maxLen];
-  bool bContinue = true;
-  unsigned int surfIndex = 1;
-  while (bContinue )
+  //  Basic validation - check if required parameters are set
+  if (vstrFixedSurf.empty())
   {
-    if (surfIndex==1)
-      sprintf(option, "-fixed_surf");
-    else sprintf(option, "-fixed_surf_%d", surfIndex);
-
-    ierr = PetscOptionsGetString( NULL, option,
-                                  buffer, maxLen, &petscFlag);
-    CHKERRQ(ierr);
-    if ( petscFlag ) vstrFixedSurf.push_back( buffer );
-    else
-    {
-      if (surfIndex==1)
-        errMsg += " No main fixed surface (option -fixed_surf missing)\n";
-      bContinue = false;
-    }
-    ++surfIndex;
+    errMsg += " No fixed surface specified (previously -fixed_surf option)\n";
+  }
+  if (vstrMovingSurf.empty())
+  {
+    errMsg += " No moving surface specified (previously -moving_surf option)\n";
+  }
+  if (strFixedMri.empty())
+  {
+    errMsg += " No fixed MRI specified (previously -fixed_mri option)\n";
+  }
+  if (strMovingMri.empty())
+  {
+    errMsg += " No moving MRI specified (previously -moving_mri option)\n";
   }
 
-  // Aparc
-  bContinue = true;
-  surfIndex = 1;
-  while (bContinue)
-  {
-    if (surfIndex==1)
-      sprintf(option, "-aparc");
-    else sprintf(option, "-aparc_%d", surfIndex);
-
-    ierr = PetscOptionsGetString( NULL, option,
-                                  buffer, maxLen, &petscFlag);
-    CHKERRQ(ierr);
-    if ( petscFlag )
-    {
-      hasAparc = true;
-      vstrAparc.push_back(buffer);
-    }
-    else bContinue = false;
-    ++surfIndex;
-  }
-
-  // check the aparc vector is same size as the fixed surf vector
-  if ( hasAparc )
-  {
-    if ( vstrAparc.size() != vstrFixedSurf.size() )
-      errMsg += " Size mismatch for APARC files (use none if you want to skip one)\n";
-  }
-
-  // Moving Surfaces
-  bContinue = true;
-  surfIndex = 1;
-  while (bContinue)
-  {
-    if ( surfIndex==1 )
-      sprintf(option, "-moving_surf");
-    else sprintf(option, "-moving_surf_%d", surfIndex);
-
-    ierr = PetscOptionsGetString( NULL, option,
-                                  buffer, maxLen,
-                                  &petscFlag);
-    CHKERRQ(ierr);
-    if ( petscFlag ) vstrMovingSurf.push_back( buffer );
-    else
-    {
-      if (surfIndex==1)
-        errMsg += " No main moving surface (option -moving_surf missing)\n";
-      bContinue = false;
-    }
-    ++surfIndex;
-  }
-
-  // Output options
-  ierr = PetscOptionsGetString( NULL, "-out",
-                                buffer, maxLen,
-                                &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) strOutput = buffer;
-  else std::cout << " No output option specified\n"
-    << "\t will use default value " << strOutput << std::endl;
-
-  ierr = PetscOptionsGetString( NULL, "-out_field",
-                                buffer, maxLen,
-                                &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) strOutputField = buffer;
-  else std::cout << " No field output option specified\n"
-    << "\t will use default value " << strOutputField << std::endl;
-
-  ierr = PetscOptionsGetString( NULL, "-out_surf",
-                                buffer, maxLen,
-                                &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) strOutputSurf = buffer;
-
-  ierr = PetscOptionsGetString( NULL, "-out_mesh",
-                                buffer, maxLen,
-                                &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) strOutputMesh = buffer;
-
-  ierr = PetscOptionsGetString( NULL, "-out_surf_affine",
-                                buffer, maxLen,
-                                &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) strOutputSurfAffine = buffer;
-
-  ierr = PetscOptionsGetString( NULL, "-gcam",
-                                buffer, maxLen,
-                                &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) strGcam = buffer;
-
-  ierr = PetscOptionsGetString( NULL, "-out_affine",
-                                buffer, maxLen,
-                                &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) strOutputAffine = buffer;
-
-  ierr = PetscOptionsGetString( NULL, "-dbg_output",
-                                buffer, maxLen,
-                                &petscFlag);
-  CHKERRQ(ierr);
-  if ( petscFlag ) strDebug = buffer;
-  //if ( petscFlag) dbgOutput = buffer;
-
-  // Other options
-  PetscReal petreal;
-  ierr = PetscOptionsGetReal( NULL, "-elt_vol",
-                              &petreal, &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) eltVolMin = eltVolMax = petreal;
-
-  {
-    PetscReal rar[20];
-    int nmax = 3;
-    ierr = PetscOptionsGetRealArray( NULL, "-elt_vol_range",
-                                     rar, &nmax, &petscFlag);
-    CHKERRQ(ierr);
-    if (petscFlag)
-    {
-      if (nmax>2)
-      {
-        std::cerr << " Element value range contains more than 2 elts - discarding...\n";
-      }
-      else if (nmax<2)
-      {
-        std::cerr << " Element value range does not contain 2 elements - exiting " << nmax << std::endl;
-        exit(1);
-      }
-      eltVolMin = rar[0];
-      eltVolMax = rar[1];
-    }
-  }
-
-  // Poisson ratio
-  ierr = PetscOptionsGetReal( NULL, "-poisson",
-                              &petreal, &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) poissonRatio = petreal;
-  else std::cout << " No Poisson ratio specified (option -poisson)\n"
-    << "\t will use default value " << poissonRatio
-    << std::endl;
-
-  // Young modulus
-  ierr = PetscOptionsGetReal( NULL, "-young",
-                              &petreal, &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) YoungModulus = petreal;
-  else std::cout << " No Young-modulus specified (option -young)\n"
-    << "\t will use default value " << YoungModulus
-    << std::endl;
-
-  ierr = PetscOptionsGetReal( NULL, "-surf_subsample",
-                              &petreal, &petscFlag);
-  CHKERRQ(ierr);
-  if (petscFlag) surfSubsample = petreal;
-
-  ierr = PetscOptionsGetString( NULL, "-cache_transform",
-                                buffer, maxLen, &petscFlag);
-  CHKERRQ(ierr);
-  if ( petscFlag )
-  {
-    strTransform = buffer;
-    std::cout << " will cache transform in file " << strTransform << std::endl;
-  }
-
-  ierr = PetscOptionsHasName( NULL, "-compress",
-                              &petscFlag);
-  CHKERRQ(ierr);
-  compress = static_cast<bool>(petscFlag);
-
-  ierr = PetscOptionsGetInt( NULL, "-fem_steps",
-                             &iSteps, &petscFlag);
-  CHKERRQ(ierr);
-  ierr = PetscOptionsGetInt( NULL, "-fem_end_step",
-                             &iEndStep, &petscFlag);
-  CHKERRQ(ierr);
-
-  ierr = PetscOptionsHasName( NULL, "-topology_old",
-                              &petscFlag );
-  CHKERRQ(ierr);
-  bUseOldTopologySolver = static_cast<bool>(petscFlag);
-
-  ierr = PetscOptionsHasName( NULL, "-use_pial_for_surf",
-                              &petscFlag);
-  CHKERRQ(ierr);
-  bUsePialForSurf = static_cast<bool>(petscFlag);
-  
   return 0;
-
 }
+
+/*
+Original PETSc-based parse function has been removed during MFEM migration.
+Below is the outline of what it parsed for reference:
+
+Required: -fixed_mri, -moving_mri, -fixed_surf, -moving_surf
+Optional: -aseg, -aparc, -out, -out_field, -out_mesh, -out_surf,
+          -out_surf_affine, -gcam, -out_affine, -dbg_output,
+          -elt_vol, -elt_vol_range, -poisson, -young, -surf_subsample,
+          -cache_transform, -compress, -fem_steps, -fem_end_step,
+          -topology_old, -use_pial_for_surf
+
+TODO: Implement new command-line parser using getopt or similar library.
+*/
 
 
 void

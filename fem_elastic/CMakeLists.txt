@@ -1,12 +1,17 @@
 project(fem_elastic)
 
-if(PETSC_FOUND)
+# Find MFEM library
+# Users should set MFEM_DIR to point to MFEM installation
+# Example: cmake -DMFEM_DIR=/path/to/mfem/install ..
+find_package(MFEM REQUIRED)
+
+if(MFEM_FOUND)
 
   include_directories(
     ${FS_INCLUDE_DIRS}
     SYSTEM
     ${CMAKE_SOURCE_DIR}/packages/tetgen
-    ${PETSC_INCLUDE_DIR}
+    ${MFEM_INCLUDE_DIRS}
     ${ITK_INCLUDE_DIRS}
   )
 
@@ -61,7 +66,7 @@ if(PETSC_FOUND)
   target_link_libraries(surf2vol
     utils
     tetgen
-    ${PETSC_LIBRARIES}
+    ${MFEM_LIBRARIES}
     ${LAPACK_LIBRARIES}
     ${BLAS_LIBRARIES}
     ${GFORTRAN_LIBRARIES}
