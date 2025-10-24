@@ -118,6 +118,14 @@ struct IoParams
   bool             bUseOldTopologySolver;
   bool             bUsePialForSurf;
 
+  // Advanced solver options
+  double           solverTolerance;
+  int              solverMaxIter;
+  std::string      solverType;       // "cg", "gmres", "minres"
+  std::string      precondType;      // "none", "jacobi", "gs"
+  bool             initGuessNonzero;
+  std::string      debugPrintPath;
+
   IoParams();
   int parse(int argc, char* argv[], std::string& errMsg);
 
@@ -495,6 +503,14 @@ main(int argc,
 
 
       solver.set_mesh(pmesh);
+
+      // Configure advanced solver options
+      solver.setSolverTolerance(params.solverTolerance);
+      solver.setSolverMaxIter(params.solverMaxIter);
+      solver.setSolverType(params.solverType);
+      solver.setPreconditioner(params.precondType);
+      solver.setInitialGuessNonzero(params.initGuessNonzero);
+      solver.setDebugPrint(params.debugPrintPath);
 
       do_vol_deformation( container, solver, cmin, cmax, std::max(1,step) );
 
@@ -1219,6 +1235,14 @@ IoParams::IoParams()
   surfSubsample = -1;
   bUseOldTopologySolver = false;
   bUsePialForSurf = false;
+
+  // Initialize advanced solver options with defaults
+  solverTolerance = 1.0e-9;
+  solverMaxIter = 10000;
+  solverType = "cg";          // Conjugate Gradient by default
+  precondType = "none";       // No preconditioner by default
+  initGuessNonzero = false;   // Zero initial guess by default
+  debugPrintPath = "";        // No debug output by default
 }
 
 int
@@ -1254,6 +1278,12 @@ IoParams::parse(int argc, char* argv[], std::string& errMsg)
     {"topology-old", no_argument, 0, 0},
     {"use-pial-for-surf", no_argument, 0, 0},
     {"penalty-weight", required_argument, 0, 0},
+    {"solver-tolerance", required_argument, 0, 0},
+    {"solver-max-iter", required_argument, 0, 0},
+    {"solver-type", required_argument, 0, 0},
+    {"preconditioner", required_argument, 0, 0},
+    {"init-guess-nonzero", no_argument, 0, 0},
+    {"fem-print", required_argument, 0, 0},
     {0, 0, 0, 0}
   };
 
@@ -1327,6 +1357,18 @@ IoParams::parse(int argc, char* argv[], std::string& errMsg)
         bUsePialForSurf = true;
       else if (opt_name == "penalty-weight")
         ; // This will be handled by solver directly, but accept it here
+      else if (opt_name == "solver-tolerance")
+        solverTolerance = atof(optarg);
+      else if (opt_name == "solver-max-iter")
+        solverMaxIter = atoi(optarg);
+      else if (opt_name == "solver-type")
+        solverType = optarg;
+      else if (opt_name == "preconditioner")
+        precondType = optarg;
+      else if (opt_name == "init-guess-nonzero")
+        initGuessNonzero = true;
+      else if (opt_name == "fem-print")
+        debugPrintPath = optarg;
     }
     else if (c == 'h')
     {
@@ -1425,6 +1467,13 @@ IoParams::help_exit()
   << "  --compress                Compress morph at each step\n"
   << "  --topology-old            Use old topology solver\n"
   << "  --use-pial-for-surf       Use pial surface for mesh construction\n"
+  << "\nAdvanced solver options:\n"
+  << "  --solver-tolerance <tol>  Convergence tolerance (default: 1e-9)\n"
+  << "  --solver-max-iter <n>     Maximum iterations (default: 10000)\n"
+  << "  --solver-type <type>      Solver type: cg, gmres, minres (default: cg)\n"
+  << "  --preconditioner <type>   Preconditioner: none, jacobi, gs (default: none)\n"
+  << "  --init-guess-nonzero      Use nonzero initial guess (warm start)\n"
+  << "  --fem-print <path>        Write debug matrices/vectors to path prefix\n"
   << "\nExample:\n"
   << "  surf2vol --fixed-mri fixed.mgz --moving-mri moving.mgz \\\n"
   << "           --fixed-surf lh.white --moving-surf lh.white.moved \\\n"

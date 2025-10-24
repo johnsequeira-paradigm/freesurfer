@@ -146,6 +146,27 @@ surf2vol --fixed-mri atlas.mgz \
 | `--use-pial-for-surf` | Use pial surface for mesh construction |
 | `--dbg-output <prefix>` | Debug output prefix (saves at each iteration) |
 
+#### Advanced Solver Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--solver-type <type>` | Linear solver: `cg`, `gmres`, `minres` | `cg` |
+| `--solver-tolerance <tol>` | Convergence tolerance | 1e-9 |
+| `--solver-max-iter <n>` | Maximum solver iterations | 10000 |
+| `--preconditioner <type>` | Preconditioner: `none`, `jacobi`, `gs` | `none` |
+| `--init-guess-nonzero` | Use nonzero initial guess (warm start) | false |
+| `--fem-print <prefix>` | Output matrices/vectors for debugging | - |
+
+**Solver Types:**
+- `cg`: Conjugate Gradient - best for symmetric positive definite systems (default)
+- `gmres`: Generalized Minimal Residual - for non-symmetric or indefinite systems
+- `minres`: Minimal Residual - for symmetric indefinite systems
+
+**Preconditioners:**
+- `none`: No preconditioning (default)
+- `jacobi`: Diagonal scaling preconditioner
+- `gs`: Gauss-Seidel preconditioner (forward/backward sweep)
+
 ## Algorithm Overview
 
 ### Processing Pipeline
@@ -166,7 +187,9 @@ surf2vol --fixed-mri atlas.mgz \
 
 4. **FEM Solver**
    - Linear elasticity with configurable material properties
-   - Conjugate Gradient (CG) solver from MFEM
+   - Multiple solver types: CG (default), GMRES, MINRES
+   - Optional preconditioners: Jacobi, Gauss-Seidel
+   - Configurable convergence tolerance and iteration limits
    - Symmetric system with boundary condition enforcement
 
 5. **Topology Check**
@@ -307,6 +330,32 @@ surf2vol --fixed-mri atlas.mgz \
          --fem-steps 5 \
          --dbg-output debug/morph
 # Creates: debug/morph_5.tm3d, debug/morph_4.tm3d, etc.
+```
+
+### Example 5: Advanced Solver Options
+
+```bash
+# Use GMRES solver with Jacobi preconditioner for difficult cases
+surf2vol --fixed-mri atlas.mgz \
+         --moving-mri subject.mgz \
+         --fixed-surf lh.white \
+         --moving-surf lh.white.moved \
+         --out output.mgz \
+         --solver-type gmres \
+         --preconditioner jacobi \
+         --solver-tolerance 1e-10 \
+         --solver-max-iter 15000 \
+         --init-guess-nonzero
+
+# Debug solver behavior by outputting matrices
+surf2vol --fixed-mri atlas.mgz \
+         --moving-mri subject.mgz \
+         --fixed-surf lh.white \
+         --moving-surf lh.white.moved \
+         --out output.mgz \
+         --fem-print debug_matrices
+# Creates: debug_matrices_stiffness.txt, debug_matrices_load.txt,
+#          debug_matrices_solution.txt
 ```
 
 ## Performance Considerations

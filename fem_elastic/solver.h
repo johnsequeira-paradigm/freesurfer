@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <iostream>
+#include <fstream>
 #include <map>
 #include <vector>
 
@@ -136,6 +137,14 @@ public:
     m_useThreshold=true;
   }
 
+  // Advanced solver configuration methods
+  void setSolverTolerance(double tol) { m_solverTolerance = tol; }
+  void setSolverMaxIter(int maxIter) { m_solverMaxIter = maxIter; }
+  void setSolverType(const std::string& type) { m_solverType = type; }
+  void setPreconditioner(const std::string& pc) { m_precondType = pc; }
+  void setInitialGuessNonzero(bool flag) { m_initGuessNonzero = flag; }
+  void setDebugPrint(const std::string& path) { m_debugPrintPath = path; }
+
   typedef std::vector<tBC*> BcContainerType;
   typedef typename BcContainerType::const_iterator BcContainerConstIterator;
   unsigned int getBcIterators(BcContainerConstIterator& begin,
@@ -186,6 +195,14 @@ protected:
   bool m_useThreshold; // sets whether a threshold should
   // be used or not when setting the BC
   double m_bcThreshold;
+
+  // Advanced solver configuration
+  double m_solverTolerance;      // Convergence tolerance
+  int    m_solverMaxIter;        // Maximum iterations
+  std::string m_solverType;      // Solver type: "cg", "gmres", "minres"
+  std::string m_precondType;     // Preconditioner: "none", "jacobi", "gs"
+  bool   m_initGuessNonzero;     // Use nonzero initial guess
+  std::string m_debugPrintPath;  // Path for debug matrix output
 };
 
 
@@ -228,6 +245,14 @@ TSolver<Cstr,n>::TSolver()
   m_bcThreshold = 0.0;
 
   m_mfcWeight = 1.0;
+
+  // Initialize advanced solver options with defaults
+  m_solverTolerance = 1.0e-9;
+  m_solverMaxIter = 10000;
+  m_solverType = "cg";        // Default to Conjugate Gradient
+  m_precondType = "none";     // No preconditioner by default
+  m_initGuessNonzero = false;
+  m_debugPrintPath = "";      // No debug output by default
 }
 
 template<class Cstr, int n>
@@ -302,29 +327,99 @@ TSolver<Cstr,n>::solve()
 
   // MFEM vectors are ready to use after setup
 
+  // Debug: Print matrix if requested
+  if (!m_debugPrintPath.empty())
+  {
+    std::ofstream matFile(m_debugPrintPath + "_stiffness.txt");
+    m_stiffness->Print(matFile);
+    matFile.close();
+    std::cout << " Wrote stiffness matrix to " << m_debugPrintPath << "_stiffness.txt" << std::endl;
+
+    std::ofstream vecFile(m_debugPrintPath + "_load.txt");
+    m_load->Print(vecFile);
+    vecFile.close();
+    std::cout << " Wrote load vector to " << m_debugPrintPath << "_load.txt" << std::endl;
+  }
+
   // Allocate solution vector
   m_delta = new mfem::Vector(m_load->Size());
-  *m_delta = 0.0; // Initialize to zero
-
-  // Create and configure the linear solver
-  // Using PCG (Preconditioned Conjugate Gradient) which is suitable for symmetric positive definite systems
-  mfem::CGSolver cg;
-  cg.SetRelTol(1.0e-9);
-  cg.SetMaxIter(10000);
-  cg.SetPrintLevel(2);
-  cg.SetOperator(*m_stiffness);
-
-  // Solve the linear system A*x = b
-  cg.Mult(*m_load, *m_delta);
-
-  if (cg.GetConverged())
+  if (m_initGuessNonzero)
   {
-    std::cout << " MFEM CGSolver converged in " << cg.GetNumIterations()
-              << " iterations with final norm " << cg.GetFinalNorm() << std::endl;
+    *m_delta = *m_load; // Use load as initial guess
+    std::cout << " Using nonzero initial guess for system solving\n";
   }
   else
   {
-    std::cout << " WARNING: MFEM CGSolver did not converge!" << std::endl;
+    *m_delta = 0.0; // Initialize to zero
+  }
+
+  // Create preconditioner if requested
+  mfem::Solver* precond = nullptr;
+  if (m_precondType == "jacobi" || m_precondType == "gs")
+  {
+    int sweeps = 1;
+    if (m_precondType == "jacobi")
+    {
+      precond = new mfem::DSmoother(0, 1.0, sweeps); // Jacobi (type 0)
+      std::cout << " Using Jacobi preconditioner (" << sweeps << " sweep)\n";
+    }
+    else if (m_precondType == "gs")
+    {
+      precond = new mfem::DSmoother(1, 1.0, sweeps); // Gauss-Seidel (type 1)
+      std::cout << " Using Gauss-Seidel preconditioner (" << sweeps << " sweeps)\n";
+    }
+    precond->SetOperator(*m_stiffness);
+  }
+
+  // Create and configure the iterative solver based on type
+  mfem::IterativeSolver* solver = nullptr;
+
+  if (m_solverType == "gmres")
+  {
+    mfem::GMRESSolver* gmres = new mfem::GMRESSolver();
+    gmres->SetKDim(50); // Restart parameter
+    solver = gmres;
+    std::cout << " Using GMRES solver (restart=" << 50 << ")\n";
+  }
+  else if (m_solverType == "minres")
+  {
+    solver = new mfem::MINRESSolver();
+    std::cout << " Using MINRES solver\n";
+  }
+  else // default to CG
+  {
+    solver = new mfem::CGSolver();
+    std::cout << " Using Conjugate Gradient solver\n";
+  }
+
+  // Configure solver parameters
+  solver->SetRelTol(m_solverTolerance);
+  solver->SetMaxIter(m_solverMaxIter);
+  solver->SetPrintLevel(m_displayLevel > 1 ? 2 : 0);
+  solver->SetOperator(*m_stiffness);
+
+  if (precond)
+  {
+    solver->SetPreconditioner(*precond);
+  }
+
+  std::cout << " Solver configuration: tol=" << m_solverTolerance
+            << ", maxiter=" << m_solverMaxIter << std::endl;
+
+  // Solve the linear system A*x = b
+  solver->Mult(*m_load, *m_delta);
+
+  if (solver->GetConverged())
+  {
+    std::cout << " MFEM " << m_solverType << " solver converged in "
+              << solver->GetNumIterations()
+              << " iterations with final norm " << solver->GetFinalNorm() << std::endl;
+  }
+  else
+  {
+    std::cout << " WARNING: MFEM " << m_solverType
+              << " solver did not converge after " << solver->GetNumIterations()
+              << " iterations!" << std::endl;
   }
 
   // Check the error: ||A*x - b||
@@ -333,6 +428,19 @@ TSolver<Cstr,n>::solve()
   residual -= *m_load;
   double norm = residual.Norml2();
   std::cout << "Absolute-Norm of error = " << norm << std::endl;
+
+  // Debug: Print solution if requested
+  if (!m_debugPrintPath.empty())
+  {
+    std::ofstream solFile(m_debugPrintPath + "_solution.txt");
+    m_delta->Print(solFile);
+    solFile.close();
+    std::cout << " Wrote solution vector to " << m_debugPrintPath << "_solution.txt" << std::endl;
+  }
+
+  // Clean up
+  delete solver;
+  if (precond) delete precond;
 
   //--------
   comm_solution(); // distribute obtained displacements to nodes

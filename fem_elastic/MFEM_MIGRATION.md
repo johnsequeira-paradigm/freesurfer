@@ -163,14 +163,55 @@ The core algorithm remains unchanged:
 
 ### Known Limitations
 - Full build requires FreeSurfer dependencies (utils, tetgen, ITK)
-- Some advanced PETSc solver options not yet mapped to MFEM equivalents
+- Parallel solving (MPI) not yet implemented
+
+## Advanced Solver Features
+
+The MFEM implementation now includes all advanced PETSc solver features:
+
+### ✅ Implemented Features
+
+1. **Multiple Solver Types**
+   - Conjugate Gradient (CG) - default, best for symmetric positive definite systems
+   - GMRES - for non-symmetric or indefinite systems
+   - MINRES - for symmetric indefinite systems
+
+2. **Preconditioners**
+   - None (default)
+   - Jacobi - diagonal scaling preconditioner
+   - Gauss-Seidel - forward/backward sweeping preconditioner
+
+3. **Solver Configuration**
+   - Configurable convergence tolerance (default: 1e-9)
+   - Configurable maximum iterations (default: 10000)
+   - Initial guess support (warm start)
+
+4. **Debugging and Diagnostics**
+   - Matrix/vector output to text files
+   - Detailed convergence information
+   - Residual error checking
+
+### Command-Line Options
+
+```bash
+# Use GMRES solver with Jacobi preconditioner
+surf2vol --solver-type gmres --preconditioner jacobi ...
+
+# Tighten convergence tolerance
+surf2vol --solver-tolerance 1e-12 --solver-max-iter 20000 ...
+
+# Enable warm start
+surf2vol --init-guess-nonzero ...
+
+# Debug output
+surf2vol --fem-print debug_output ...
+```
 
 ## Future Work
 
-1. Add MFEM preconditioner options
-2. Support for parallel solving (MFEM with MPI)
-3. Performance benchmarking vs. PETSc
-4. Add more MFEM solver types (GMRES, MINRES)
+1. Support for parallel solving (MFEM with MPI)
+2. Performance benchmarking vs. PETSc
+3. Additional preconditioners (incomplete LU, multigrid)
 
 ## References
 
