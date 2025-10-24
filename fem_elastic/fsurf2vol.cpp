@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 #include <iterator>
+#include <getopt.h>
 
 // MFEM includes
 #include "mfem.hpp"
@@ -118,8 +119,7 @@ struct IoParams
   bool             bUsePialForSurf;
 
   IoParams();
-  //std::string parse(int ac, char* av[]);
-  int parse(std::string& errMsg);
+  int parse(int argc, char* argv[], std::string& errMsg);
 
   void help_exit();
 };
@@ -279,10 +279,8 @@ main(int argc,
 
   IoParams params;
 
-  //std::string errMsg = params.parse(argc, argv);
-
   std::string errMsg;
-  params.parse(errMsg);
+  params.parse(argc, argv, errMsg);
 
   if ( !errMsg.empty() )
   {
@@ -1224,38 +1222,151 @@ IoParams::IoParams()
 }
 
 int
-IoParams::parse(std::string& errMsg)
+IoParams::parse(int argc, char* argv[], std::string& errMsg)
 {
-  // TODO: Implement command-line parsing to replace PETSc options
-  // For now, this function needs to be rewritten to use argc/argv directly
-  // or use a command-line parsing library like getopt
-  //
-  // The original PETSc-based parsing has been removed during MFEM migration
-  // Users should either:
-  // 1. Set IoParams members directly in main() before calling parse()
-  // 2. Implement their own command-line parser using getopt or similar
-  // 3. Use environment variables or configuration files
+  // Define long options for getopt_long
+  static struct option long_options[] = {
+    {"help", no_argument, 0, 'h'},
+    {"fixed-mri", required_argument, 0, 0},
+    {"moving-mri", required_argument, 0, 0},
+    {"aseg", required_argument, 0, 0},
+    {"fixed-surf", required_argument, 0, 0},
+    {"moving-surf", required_argument, 0, 0},
+    {"aparc", required_argument, 0, 0},
+    {"out", required_argument, 0, 'o'},
+    {"out-field", required_argument, 0, 0},
+    {"out-mesh", required_argument, 0, 0},
+    {"out-surf", required_argument, 0, 0},
+    {"out-surf-affine", required_argument, 0, 0},
+    {"gcam", required_argument, 0, 0},
+    {"out-affine", required_argument, 0, 0},
+    {"dbg-output", required_argument, 0, 0},
+    {"elt-vol", required_argument, 0, 0},
+    {"elt-vol-min", required_argument, 0, 0},
+    {"elt-vol-max", required_argument, 0, 0},
+    {"poisson", required_argument, 0, 0},
+    {"young", required_argument, 0, 0},
+    {"surf-subsample", required_argument, 0, 0},
+    {"cache-transform", required_argument, 0, 0},
+    {"compress", no_argument, 0, 0},
+    {"fem-steps", required_argument, 0, 0},
+    {"fem-end-step", required_argument, 0, 0},
+    {"topology-old", no_argument, 0, 0},
+    {"use-pial-for-surf", no_argument, 0, 0},
+    {"penalty-weight", required_argument, 0, 0},
+    {0, 0, 0, 0}
+  };
 
-  std::cerr << "WARNING: Command-line parsing not yet implemented for MFEM migration.\n";
-  std::cerr << "Please set IoParams members directly in the code or implement command-line parsing.\n";
-  std::cerr << "See help_exit() for list of required parameters.\n";
+  int option_index = 0;
+  int c;
 
-  //  Basic validation - check if required parameters are set
-  if (vstrFixedSurf.empty())
+  // Counter for multiple surfaces
+  int fixed_surf_count = 0;
+  int moving_surf_count = 0;
+  int aparc_count = 0;
+
+  while ((c = getopt_long(argc, argv, "ho:", long_options, &option_index)) != -1)
   {
-    errMsg += " No fixed surface specified (previously -fixed_surf option)\n";
+    if (c == 0)
+    {
+      // Long option
+      std::string opt_name = long_options[option_index].name;
+
+      if (opt_name == "fixed-mri")
+        strFixedMri = optarg;
+      else if (opt_name == "moving-mri")
+        strMovingMri = optarg;
+      else if (opt_name == "aseg")
+        strAseg = optarg;
+      else if (opt_name == "fixed-surf")
+        vstrFixedSurf.push_back(optarg);
+      else if (opt_name == "moving-surf")
+        vstrMovingSurf.push_back(optarg);
+      else if (opt_name == "aparc")
+      {
+        hasAparc = true;
+        vstrAparc.push_back(optarg);
+      }
+      else if (opt_name == "out-field")
+        strOutputField = optarg;
+      else if (opt_name == "out-mesh")
+        strOutputMesh = optarg;
+      else if (opt_name == "out-surf")
+        strOutputSurf = optarg;
+      else if (opt_name == "out-surf-affine")
+        strOutputSurfAffine = optarg;
+      else if (opt_name == "gcam")
+        strGcam = optarg;
+      else if (opt_name == "out-affine")
+        strOutputAffine = optarg;
+      else if (opt_name == "dbg-output")
+        strDebug = optarg;
+      else if (opt_name == "elt-vol")
+        eltVolMin = eltVolMax = atof(optarg);
+      else if (opt_name == "elt-vol-min")
+        eltVolMin = atof(optarg);
+      else if (opt_name == "elt-vol-max")
+        eltVolMax = atof(optarg);
+      else if (opt_name == "poisson")
+        poissonRatio = atof(optarg);
+      else if (opt_name == "young")
+        YoungModulus = atof(optarg);
+      else if (opt_name == "surf-subsample")
+        surfSubsample = atof(optarg);
+      else if (opt_name == "cache-transform")
+        strTransform = optarg;
+      else if (opt_name == "compress")
+        compress = true;
+      else if (opt_name == "fem-steps")
+        iSteps = atoi(optarg);
+      else if (opt_name == "fem-end-step")
+        iEndStep = atoi(optarg);
+      else if (opt_name == "topology-old")
+        bUseOldTopologySolver = true;
+      else if (opt_name == "use-pial-for-surf")
+        bUsePialForSurf = true;
+      else if (opt_name == "penalty-weight")
+        ; // This will be handled by solver directly, but accept it here
+    }
+    else if (c == 'h')
+    {
+      help_exit();
+    }
+    else if (c == 'o')
+    {
+      strOutput = optarg;
+    }
+    else if (c == '?')
+    {
+      // getopt_long already printed an error message
+      errMsg += "Invalid command-line option.\n";
+      return 1;
+    }
   }
-  if (vstrMovingSurf.empty())
-  {
-    errMsg += " No moving surface specified (previously -moving_surf option)\n";
-  }
+
+  // Validate required parameters
   if (strFixedMri.empty())
-  {
-    errMsg += " No fixed MRI specified (previously -fixed_mri option)\n";
-  }
+    errMsg += " No fixed volume specified (use --fixed-mri)\n";
+
   if (strMovingMri.empty())
+    errMsg += " No moving volume specified (use --moving-mri)\n";
+
+  if (vstrFixedSurf.empty())
+    errMsg += " No fixed surface specified (use --fixed-surf)\n";
+
+  if (vstrMovingSurf.empty())
+    errMsg += " No moving surface specified (use --moving-surf)\n";
+
+  // Check surface count match
+  if (vstrFixedSurf.size() != vstrMovingSurf.size())
   {
-    errMsg += " No moving MRI specified (previously -moving_mri option)\n";
+    errMsg += " Number of fixed and moving surfaces must match\n";
+  }
+
+  // Check aparc count if provided
+  if (hasAparc && vstrAparc.size() != vstrFixedSurf.size())
+  {
+    errMsg += " Number of aparc files must match number of surfaces\n";
   }
 
   return 0;
@@ -1279,28 +1390,45 @@ TODO: Implement new command-line parser using getopt or similar library.
 void
 IoParams::help_exit()
 {
-  std::cout << " Usage : the following parameters are available:\n"
-  << "\t -fixed_surf[_%d] <file name> "
-  << " (no numbering for the first surface, starting at 2 after)\n"
-  << "\t -aparc[_%d] [<file_name>|none] - numbering starts at secon\n"
-  << "\t -moving_surf[_%d]   <file name>\n"
-  << "\t -fixed_mri  <file name>\n"
-  << "\t -moving_mri    <file name>\n"
-  << "\n Other optional arguments\n"
-  << "\t -out <file name>\n"
-  << "\t -out_field <file name>\n"
-  << "\t -out_affine <file name>\n"
-  << "\t -out_surf <root file name> (will be appended _<surf index>.white)\n"
-  << "\t -out_surf_affine <root file name> (will be appended _<surf index>.white)\n"
-  << "\t -out_mesh <file name>\n"
-  << "\t -spacing_x <scalar>\n"
-  << "\t -spacing_y <scalar>\n"
-  << "\t -spacing_z <scalar>\n"
-  << "\t -poisson <double> (must be <0.5)\n"
-  << "\t -cache_transform <file name> (if more than one run, will write the transform in a file and use in subsequent runs)\n"
-  << "\t -dirty factor (between 0 and 1)\n"
-  << "\t -dbg_output - will write a morph file at each iteration\n"
-  << "\n Also, all the Petsc KSP options apply (see Petsc manual for details)\n";
+  std::cout << "\nUsage: surf2vol [OPTIONS]\n\n"
+  << "Diffuse surface deformation to volumes using elastic finite element methods.\n"
+  << "Migrated from PETSc to MFEM library.\n\n"
+  << "Required arguments:\n"
+  << "  --fixed-mri <file>        Fixed volume MRI file\n"
+  << "  --moving-mri <file>       Moving volume MRI file\n"
+  << "  --fixed-surf <file>       Fixed surface file (can be specified multiple times)\n"
+  << "  --moving-surf <file>      Moving surface file (can be specified multiple times)\n"
+  << "\nOptional arguments:\n"
+  << "  -h, --help                Show this help message\n"
+  << "  --aseg <file>             ASEG file for fixed volume\n"
+  << "  --aparc <file>            APARC file (can be specified multiple times, must match surfaces)\n"
+  << "  -o, --out <file>          Output file (default: out.mgz)\n"
+  << "  --out-field <file>        Output field file (default: out_field.mgz)\n"
+  << "  --out-mesh <file>         Output mesh file (.tm3d)\n"
+  << "  --out-surf <file>         Output surface file root\n"
+  << "  --out-surf-affine <file>  Output affine surface file root\n"
+  << "  --gcam <file>             Output GCAM file\n"
+  << "  --out-affine <file>       Output affine morphed volume\n"
+  << "  --dbg-output <file>       Debug output (writes morph at each iteration)\n"
+  << "\nFEM parameters:\n"
+  << "  --elt-vol <value>         Element volume (sets both min and max)\n"
+  << "  --elt-vol-min <value>     Minimum element volume (default: 2)\n"
+  << "  --elt-vol-max <value>     Maximum element volume (default: 21)\n"
+  << "  --poisson <value>         Poisson ratio (default: 0.3, must be < 0.5)\n"
+  << "  --young <value>           Young's modulus (default: 10)\n"
+  << "  --fem-steps <n>           Number of FEM steps (default: 1)\n"
+  << "  --fem-end-step <n>        End step (default: -1)\n"
+  << "  --penalty-weight <value>  Penalty weight for MFC conditions\n"
+  << "\nOther options:\n"
+  << "  --surf-subsample <value>  Surface subsampling distance\n"
+  << "  --cache-transform <file>  Cache/load transform from file\n"
+  << "  --compress                Compress morph at each step\n"
+  << "  --topology-old            Use old topology solver\n"
+  << "  --use-pial-for-surf       Use pial surface for mesh construction\n"
+  << "\nExample:\n"
+  << "  surf2vol --fixed-mri fixed.mgz --moving-mri moving.mgz \\\n"
+  << "           --fixed-surf lh.white --moving-surf lh.white.moved \\\n"
+  << "           --out output.mgz\n\n";
   exit(1);
 }
 
